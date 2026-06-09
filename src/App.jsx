@@ -584,6 +584,204 @@ const NAV = [
   { id: "hsnb2c",   label: "HSN B2C",   icon: "🔖" },
 ];
 
+// ─── PDF Export — Consolidated Summary Only ───────────────────────────────────
+function exportSummaryPDF(summary, fileName) {
+  const b = summary.b2bSummary;
+  const c = summary.b2cSummary;
+  const totalTax   = (b?.cgst||0)+(b?.sgst||0)+(b?.igst||0)+(c?.cgst||0)+(c?.sgst||0)+(c?.igst||0);
+  const totalTaxable = (b?.taxableAmt||0)+(c?.taxableAmt||0);
+  const generatedOn = new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"});
+
+  const cur = (n) => typeof n==="number"&&!isNaN(n) ? "\u20B9"+n.toLocaleString("en-IN",{minimumFractionDigits:2,maximumFractionDigits:2}) : "\u2014";
+  const num = (n) => typeof n==="number"&&!isNaN(n) ? n.toLocaleString("en-IN",{maximumFractionDigits:2}) : (n??"\u2014");
+
+  const RATE_C = {
+    0:  {bg:"#f1efe8",fg:"#5f5e5a"},
+    5:  {bg:"#e1f5ee",fg:"#0f6e56"},
+    12: {bg:"#e6f1fb",fg:"#185fa5"},
+    18: {bg:"#faeeda",fg:"#854f0b"},
+    28: {bg:"#fcebeb",fg:"#a32d2d"},
+  };
+  const rateBadge = (rate) => {
+    const rc = RATE_C[rate] || RATE_C[0];
+    return `<span style="background:${rc.bg};color:${rc.fg};font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;white-space:nowrap">${rate}%</span>`;
+  };
+
+  const rateRows = (byRate) => byRate?.length ? byRate.map(d=>`
+    <tr>
+      <td style="padding:5px 8px">${rateBadge(d.rate)}</td>
+      <td style="padding:5px 8px;text-align:right;font-weight:600">${cur(d.taxableAmt)}</td>
+      <td style="padding:5px 8px;text-align:right;color:${d.cgst>0?"#1a1a18":"#ccc"}">${d.cgst>0?cur(d.cgst):"—"}</td>
+      <td style="padding:5px 8px;text-align:right;color:${d.sgst>0?"#1a1a18":"#ccc"}">${d.sgst>0?cur(d.sgst):"—"}</td>
+      <td style="padding:5px 8px;text-align:right;color:${d.igst>0?"#1a1a18":"#ccc"}">${d.igst>0?cur(d.igst):"—"}</td>
+      <td style="padding:5px 8px;text-align:right;font-weight:700;color:#0f6e56">${cur(d.cgst+d.sgst+d.igst)}</td>
+    </tr>`).join("") : "";
+
+  const salesCard = (title, badge, d, accent) => !d ? "" : `
+    <div style="flex:1;border:1.5px solid #e0e0db;border-radius:10px;padding:16px 18px;min-width:0">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;border-bottom:2px solid ${accent};padding-bottom:8px">
+        <span style="font-size:13px;font-weight:700;color:#1a1a18">${title}</span>
+        <span style="background:${accent}22;color:${accent};font-size:10px;font-weight:700;padding:3px 10px;border-radius:20px">${badge}</span>
+      </div>
+      ${[
+        ["Invoice Value",    cur(d.invoiceValue)],
+        ["Taxable Amount",   cur(d.taxableAmt)],
+        ["CGST",             cur(d.cgst)],
+        ["SGST",             cur(d.sgst)],
+        ["IGST",             cur(d.igst)],
+        ["Total Tax",        cur(d.cgst+d.sgst+d.igst)],
+      ].map(([k,v])=>`
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f0ede8;font-size:11px">
+          <span style="color:#5f5e5a">${k}</span>
+          <span style="font-weight:600;color:#1a1a18">${v}</span>
+        </div>`).join("")}
+      ${d.byRate?.length ? `
+        <div style="margin-top:14px;padding-top:10px;border-top:1px dashed #ddd">
+          <div style="font-size:9px;font-weight:700;color:#9e9c97;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Breakdown by Tax Rate</div>
+          <table style="width:100%;border-collapse:collapse;font-size:10px">
+            <thead>
+              <tr style="border-bottom:1px solid #e0e0db">
+                <th style="padding:4px 8px;text-align:left;font-weight:600;color:#9e9c97;font-size:9px">Rate</th>
+                <th style="padding:4px 8px;text-align:right;font-weight:600;color:#9e9c97;font-size:9px">Taxable Amt</th>
+                <th style="padding:4px 8px;text-align:right;font-weight:600;color:#9e9c97;font-size:9px">CGST</th>
+                <th style="padding:4px 8px;text-align:right;font-weight:600;color:#9e9c97;font-size:9px">SGST</th>
+                <th style="padding:4px 8px;text-align:right;font-weight:600;color:#9e9c97;font-size:9px">IGST</th>
+                <th style="padding:4px 8px;text-align:right;font-weight:600;color:#9e9c97;font-size:9px">Total Tax</th>
+              </tr>
+            </thead>
+            <tbody>${rateRows(d.byRate)}</tbody>
+          </table>
+        </div>` : ""}
+    </div>`;
+
+  const kpiBox = (label, value, sub, borderColor) => `
+    <div style="background:#f7f6f3;border-radius:9px;padding:11px 14px;border-left:3px solid ${borderColor||"#1D9E75"};flex:1;min-width:0">
+      <div style="font-size:9px;color:#9e9c97;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;font-weight:600">${label}</div>
+      <div style="font-size:15px;font-weight:700;color:#1a1a18;white-space:nowrap">${value}</div>
+      ${sub?`<div style="font-size:9px;color:#9e9c97;margin-top:3px">${sub}</div>`:""}
+    </div>`;
+
+  const html = `<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8"/>
+<title>GSTR-1 Consolidated Summary${summary.period?" \u2014 "+summary.period:""}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a18;background:#fff;padding:28px 32px;}
+  @media print{
+    body{padding:14px 18px;}
+    @page{size:A4 portrait;margin:14mm 16mm;}
+    .no-print{display:none!important;}
+  }
+</style>
+</head><body>
+
+<!-- TOP HEADER BAR -->
+<div style="display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:2.5px solid #1D9E75;margin-bottom:22px">
+  <div>
+    <div style="font-size:22px;font-weight:800;color:#1D9E75;letter-spacing:-.3px">GSTR-1 Consolidated Summary</div>
+    <div style="font-size:11px;color:#9e9c97;margin-top:4px">Source: ${fileName||"—"}</div>
+  </div>
+  <div style="text-align:right">
+    ${summary.period?`<div style="background:#e1f5ee;color:#0f6e56;font-size:11px;font-weight:700;padding:4px 12px;border-radius:20px;display:inline-block;margin-bottom:5px">Period: ${summary.period}</div><br/>`:""}
+    <span style="font-size:11px;color:#9e9c97">Generated: ${generatedOn}</span>
+  </div>
+</div>
+
+<!-- KPI STRIP -->
+<div style="display:flex;gap:10px;margin-bottom:22px;flex-wrap:wrap">
+  ${kpiBox("Total Taxable Value", cur(totalTaxable), "", "#1D9E75")}
+  ${kpiBox("Total Tax Liability", cur(totalTax), "", "#854f0b")}
+  ${kpiBox("Total CGST", cur((b?.cgst||0)+(c?.cgst||0)), "", "#185fa5")}
+  ${kpiBox("Total SGST", cur((b?.sgst||0)+(c?.sgst||0)), "", "#185fa5")}
+  ${kpiBox("B2B Invoices", num(b?.invoices), `${b?.recipients||0} recipients`, "#1D9E75")}
+  ${kpiBox("B2C Invoices", num(c?.invoices), `${c?.rows?.length||0} line items`, "#1D9E75")}
+</div>
+
+<!-- DIVIDER -->
+<div style="font-size:12px;font-weight:700;color:#1a1a18;padding:9px 0 8px;border-bottom:1.5px solid #e0e0db;margin-bottom:16px;display:flex;align-items:center;gap:8px">
+  <span style="display:inline-block;width:4px;height:14px;background:#1D9E75;border-radius:2px"></span>
+  Sales Summary
+</div>
+
+<!-- B2B + B2C CARDS SIDE BY SIDE -->
+<div style="display:flex;gap:16px;margin-bottom:24px">
+  ${salesCard("B2B Sales", `${b?.invoices||0} invoices &nbsp;·&nbsp; ${b?.recipients||0} recipients`, b, "#185fa5")}
+  ${salesCard("B2C Sales", `${c?.invoices||0} invoices &nbsp;·&nbsp; ${c?.rows?.length||0} line items`, c, "#1D9E75")}
+</div>
+
+<!-- COMBINED TAX SUMMARY TABLE -->
+<div style="font-size:12px;font-weight:700;color:#1a1a18;padding:9px 0 8px;border-bottom:1.5px solid #e0e0db;margin-bottom:14px;display:flex;align-items:center;gap:8px">
+  <span style="display:inline-block;width:4px;height:14px;background:#1D9E75;border-radius:2px"></span>
+  Combined Tax Summary
+</div>
+<table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:24px">
+  <thead>
+    <tr style="background:#f7f6f3">
+      <th style="padding:8px 10px;text-align:left;font-weight:700;color:#9e9c97;font-size:9px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #e0e0db">Category</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700;color:#9e9c97;font-size:9px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #e0e0db">Invoice Value</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700;color:#9e9c97;font-size:9px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #e0e0db">Taxable Amt</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700;color:#9e9c97;font-size:9px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #e0e0db">CGST</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700;color:#9e9c97;font-size:9px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #e0e0db">SGST</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700;color:#9e9c97;font-size:9px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #e0e0db">IGST</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700;color:#9e9c97;font-size:9px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #e0e0db">Total Tax</th>
+    </tr>
+  </thead>
+  <tbody>
+    ${b ? `<tr style="border-bottom:1px solid #f0ede8">
+      <td style="padding:8px 10px;font-weight:600">B2B Sales</td>
+      <td style="padding:8px 10px;text-align:right">${cur(b.invoiceValue)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:600">${cur(b.taxableAmt)}</td>
+      <td style="padding:8px 10px;text-align:right;color:#0f6e56">${cur(b.cgst)}</td>
+      <td style="padding:8px 10px;text-align:right;color:#0f6e56">${cur(b.sgst)}</td>
+      <td style="padding:8px 10px;text-align:right;color:#185fa5">${b.igst>0?cur(b.igst):"—"}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700;color:#0f6e56">${cur(b.cgst+b.sgst+b.igst)}</td>
+    </tr>` : ""}
+    ${c ? `<tr style="border-bottom:1px solid #f0ede8">
+      <td style="padding:8px 10px;font-weight:600">B2C Sales</td>
+      <td style="padding:8px 10px;text-align:right">${cur(c.invoiceValue)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:600">${cur(c.taxableAmt)}</td>
+      <td style="padding:8px 10px;text-align:right;color:#0f6e56">${cur(c.cgst)}</td>
+      <td style="padding:8px 10px;text-align:right;color:#0f6e56">${cur(c.sgst)}</td>
+      <td style="padding:8px 10px;text-align:right;color:#185fa5">${c.igst>0?cur(c.igst):"—"}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700;color:#0f6e56">${cur(c.cgst+c.sgst+c.igst)}</td>
+    </tr>` : ""}
+    <tr style="background:#f7f6f3;border-top:1.5px solid #e0e0db">
+      <td style="padding:9px 10px;font-weight:700;font-size:12px">Grand Total</td>
+      <td style="padding:9px 10px;text-align:right;font-weight:700">${cur((b?.invoiceValue||0)+(c?.invoiceValue||0))}</td>
+      <td style="padding:9px 10px;text-align:right;font-weight:700">${cur(totalTaxable)}</td>
+      <td style="padding:9px 10px;text-align:right;font-weight:700;color:#0f6e56">${cur((b?.cgst||0)+(c?.cgst||0))}</td>
+      <td style="padding:9px 10px;text-align:right;font-weight:700;color:#0f6e56">${cur((b?.sgst||0)+(c?.sgst||0))}</td>
+      <td style="padding:9px 10px;text-align:right;font-weight:700;color:#185fa5">${cur((b?.igst||0)+(c?.igst||0))}</td>
+      <td style="padding:9px 10px;text-align:right;font-weight:800;font-size:13px;color:#0f6e56">${cur(totalTax)}</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- FOOTER -->
+<div style="margin-top:20px;padding-top:10px;border-top:1px solid #e0e0db;display:flex;justify-content:space-between;font-size:9px;color:#9e9c97">
+  <span>GSTR-1 Consolidated Summary${summary.period?" \u00B7 "+summary.period:""}</span>
+  <span>Generated on ${generatedOn}</span>
+</div>
+
+<!-- Print trigger button (hidden in print) -->
+<div class="no-print" style="position:fixed;bottom:24px;right:24px;display:flex;gap:10px">
+  <button onclick="window.print()" style="background:#1D9E75;color:#fff;border:none;padding:10px 22px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;box-shadow:0 2px 8px rgba(29,158,117,.35)">
+    ⬇ Save as PDF
+  </button>
+  <button onclick="window.close()" style="background:#f1efe8;color:#5f5e5a;border:none;padding:10px 16px;border-radius:10px;font-size:13px;cursor:pointer">
+    Close
+  </button>
+</div>
+
+</body></html>`;
+
+  const win = window.open("", "_blank");
+  if (!win) { alert("Please allow popups for this site to open the PDF preview."); return; }
+  win.document.write(html);
+  win.document.close();
+}
+
 export default function App() {
   const [summary, setSummary] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
@@ -643,13 +841,24 @@ export default function App() {
             </div>
           )}
           {summary && (
-            <button onClick={() => { setSummary(null); setFileName(""); }} style={{
-              padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 500,
-              background: C.bg, color: C.textSub, border: `1px solid ${C.border}`,
-              display: "flex", alignItems: "center", gap: 5,
-            }}>
-              ↩ New file
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => exportSummaryPDF(summary, fileName)} style={{
+                padding: "6px 16px", borderRadius: 8, fontSize: 12, fontWeight: 600,
+                background: C.brand, color: "#fff", border: "none",
+                display: "flex", alignItems: "center", gap: 6,
+                boxShadow: "0 1px 4px rgba(29,158,117,0.3)",
+                cursor: "pointer",
+              }}>
+                ⬇ Export PDF
+              </button>
+              <button onClick={() => { setSummary(null); setFileName(""); }} style={{
+                padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 500,
+                background: C.bg, color: C.textSub, border: `1px solid ${C.border}`,
+                display: "flex", alignItems: "center", gap: 5,
+              }}>
+                ↩ New file
+              </button>
+            </div>
           )}
         </div>
       </div>
