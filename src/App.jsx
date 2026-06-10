@@ -15,16 +15,21 @@ const fmtCur = (n) =>
 // ─── Parser ───────────────────────────────────────────────────────────────────
 function parseSheet(ws) {
   const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-  const headerRow = raw.find((r) => r && r[0] === "Sl.No");
+  // Header row: find row where ANY cell equals "Sl.No"
+  const headerRow = raw.find((r) => r && r.some((c) => c != null && String(c).trim() === "Sl.No"));
   if (!headerRow) return { headers: [], rows: [] };
   const hi = raw.indexOf(headerRow);
-  const headers = headerRow.map((h) => (h != null ? String(h).trim() : ""));
+  // Normalise: shift so Sl.No is at index 0
+  const slnoIdx = headerRow.findIndex((c) => c != null && String(c).trim() === "Sl.No");
+  const headers = headerRow.slice(slnoIdx).map((h) => (h != null ? String(h).trim() : ""));
   const rows = [];
   for (let i = hi + 1; i < raw.length; i++) {
     const r = raw[i];
-    if (!r || r[0] == null || String(r[0]).toLowerCase().includes("grand")) continue;
+    if (!r) continue;
+    const shifted = r.slice(slnoIdx);
+    if (shifted[0] == null || String(shifted[0]).toLowerCase().includes("grand")) continue;
     const obj = {};
-    headers.forEach((h, j) => { obj[h] = r[j]; });
+    headers.forEach((h, j) => { obj[h] = shifted[j]; });
     rows.push(obj);
   }
   return { headers, rows };
@@ -39,19 +44,44 @@ function sumField(rows, field) {
 
 function buildSummary(workbook) {
   const sheets = workbook.SheetNames;
-  const find = (kw) => sheets.find((s) => s.toLowerCase().includes(kw.toLowerCase()));
-  const b2bName = find("b2b");
-  const b2cName = find("b2c sales");
-  const hsnB2BName = sheets.find((s) => s.toLowerCase().includes("hsn") && s.toLowerCase().includes("b2b"));
-  const hsnB2CName = sheets.find((s) => s.toLowerCase().includes("hsn") && s.toLowerCase().includes("b2c"));
+  const findSheet = (kw) => sheets.find((s) => s.toLowerCase().includes(kw.toLowerCase()));
 
-  const b2b = b2bName ? parseSheet(workbook.Sheets[b2bName]) : null;
-  const b2c = b2cName ? parseSheet(workbook.Sheets[b2cName]) : null;
-  const hsnB2B = hsnB2BName ? parseSheet(workbook.Sheets[hsnB2BName]) : null;
-  const hsnB2C = hsnB2CName ? parseSheet(workbook.Sheets[hsnB2CName]) : null;
+  // Sheet detection — B2B sales (taxable) + Bill of Supply (exempt, 0%)
+  const b2bTaxName  = sheets.find((s) => {
+    const l = s.toLowerCase();
+    return l.includes("b2b") && !l.includes("hsn") && !l.includes("bill");
+  });
+  const b2bBosName  = sheets.find((s) => {
+    const l = s.toLowerCase();
+    return l.includes("bill") && l.includes("supply");
+  });
+  const b2cName     = sheets.find((s) => {
+    const l = s.toLowerCase();
+    return l.includes("b2c") && !l.includes("hsn");
+  });
+  const hsnB2BName  = sheets.find((s) => {
+    const l = s.toLowerCase();
+    return l.includes("hsn") && l.includes("b2b");
+  });
+  const hsnB2CName  = sheets.find((s) => {
+    const l = s.toLowerCase();
+    return l.includes("hsn") && l.includes("b2c");
+  });
+
+  const b2bTax  = b2bTaxName  ? parseSheet(workbook.Sheets[b2bTaxName])  : null;
+  const b2bBos  = b2bBosName  ? parseSheet(workbook.Sheets[b2bBosName])  : null;
+  const b2c     = b2cName     ? parseSheet(workbook.Sheets[b2cName])     : null;
+  const hsnB2B  = hsnB2BName  ? parseSheet(workbook.Sheets[hsnB2BName])  : null;
+  const hsnB2C  = hsnB2CName  ? parseSheet(workbook.Sheets[hsnB2CName])  : null;
+
+  // Merge B2B taxable + Bill of Supply rows into one combined B2B dataset
+  const b2bAllRows = [
+    ...(b2bTax?.rows  || []).map((r) => ({ ...r, _source: "taxable" })),
+    ...(b2bBos?.rows  || []).map((r) => ({ ...r, _source: "bos"     })),
+  ];
 
   const period = (() => {
-    const ws = workbook.Sheets[b2bName || b2cName];
+    const ws = workbook.Sheets[b2bTaxName || b2bBosName || b2cName];
     if (!ws) return "";
     const first = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null })[0];
     const cell = first && first.find((c) => c && String(c).toLowerCase().includes("sales reports"));
@@ -77,17 +107,33 @@ function buildSummary(workbook) {
       .filter((d) => d.taxableAmt > 0 || d.cgst > 0 || d.sgst > 0);
   }
 
-  const b2bSummary = b2b ? {
-    invoices: new Set(b2b.rows.map((r) => r["INVOICE No"])).size,
-    recipients: new Set(b2b.rows.map((r) => r["RECEIPIENT"])).size,
-    taxableAmt: sumField(b2b.rows, "T'BLE AMT"),
-    invoiceValue: sumField(b2b.rows, "INVOICE VALUE"),
-    igst: sumField(b2b.rows, "IGST"),
-    cgst: sumField(b2b.rows, "CGST"),
-    sgst: sumField(b2b.rows, "SGST"),
-    cess: sumField(b2b.rows, "CESS"),
-    byRate: byTaxRate(b2b.rows),
-    rows: b2b.rows,
+  const b2bSummary = b2bAllRows.length ? {
+    invoices:       new Set(b2bAllRows.map((r) => r["INVOICE No"])).size,
+    recipients:     new Set(b2bAllRows.map((r) => r["RECEIPIENT"])).size,
+    taxableAmt:     sumField(b2bAllRows, "T'BLE AMT"),
+    invoiceValue:   sumField(b2bAllRows, "INVOICE VALUE"),
+    igst:           sumField(b2bAllRows, "IGST"),
+    cgst:           sumField(b2bAllRows, "CGST"),
+    sgst:           sumField(b2bAllRows, "SGST"),
+    cess:           sumField(b2bAllRows, "CESS"),
+    byRate:         byTaxRate(b2bAllRows),
+    rows:           b2bAllRows,
+    // Sub-totals for each source
+    taxable: b2bTax?.rows?.length ? {
+      invoices:     new Set(b2bTax.rows.map((r) => r["INVOICE No"])).size,
+      invoiceValue: sumField(b2bTax.rows, "INVOICE VALUE"),
+      taxableAmt:   sumField(b2bTax.rows, "T'BLE AMT"),
+      cgst:         sumField(b2bTax.rows, "CGST"),
+      sgst:         sumField(b2bTax.rows, "SGST"),
+      igst:         sumField(b2bTax.rows, "IGST"),
+    } : null,
+    bos: b2bBos?.rows?.length ? {
+      invoices:     new Set(b2bBos.rows.map((r) => r["INVOICE No"])).size,
+      invoiceValue: sumField(b2bBos.rows, "INVOICE VALUE"),
+      taxableAmt:   sumField(b2bBos.rows, "T'BLE AMT"),
+      cgst:         0, sgst: 0, igst: 0,
+    } : null,
+    sheetNames: [b2bTaxName, b2bBosName].filter(Boolean),
   } : null;
 
   const b2cSummary = b2c ? {
@@ -102,7 +148,7 @@ function buildSummary(workbook) {
     rows: b2c.rows,
   } : null;
 
-  return { period, b2bSummary, b2cSummary, hsnB2B, hsnB2C, sheetNames: sheets };
+  return { period, b2bSummary, b2cSummary, hsnB2B, hsnB2C, sheetNames: sheets, hasBos: !!b2bBosName };
 }
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
@@ -328,12 +374,14 @@ function OverviewSection({ summary }) {
                 {d.invoices} invoices
               </span>
             </div>
+
+            {/* Combined totals */}
             {[
-              ["Invoice value", fmtCur(d.invoiceValue)],
-              ["Taxable amount", fmtCur(d.taxableAmt)],
-              ["CGST", fmtCur(d.cgst)],
-              ["SGST", fmtCur(d.sgst)],
-              ["IGST", fmtCur(d.igst)],
+              ["Invoice value",   fmtCur(d.invoiceValue)],
+              ["Taxable amount",  fmtCur(d.taxableAmt)],
+              ["CGST",            fmtCur(d.cgst)],
+              ["SGST",            fmtCur(d.sgst)],
+              ["IGST",            fmtCur(d.igst)],
             ].map(([k, v]) => (
               <div key={k} style={{
                 display: "flex", justifyContent: "space-between",
@@ -343,6 +391,50 @@ function OverviewSection({ summary }) {
                 <span style={{ fontWeight: 600 }}>{v}</span>
               </div>
             ))}
+
+            {/* B2B sub-breakdown: Taxable Sales vs Bill of Supply */}
+            {title === "B2B Sales" && (d.taxable || d.bos) && (
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px dashed ${C.border}` }}>
+                <p style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>Sub-breakdown</p>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {d.taxable && (
+                    <div style={{ background: C.blueBg, borderRadius: 8, padding: "10px 12px" }}>
+                      <p style={{ fontSize: 10, fontWeight: 700, color: C.blue, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6 }}>Taxable Sales</p>
+                      {[
+                        ["Invoices",    d.taxable.invoices],
+                        ["Value",       fmtCur(d.taxable.invoiceValue)],
+                        ["Taxable Amt", fmtCur(d.taxable.taxableAmt)],
+                        ["CGST",        fmtCur(d.taxable.cgst)],
+                        ["SGST",        fmtCur(d.taxable.sgst)],
+                      ].map(([k, v]) => (
+                        <div key={k} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "3px 0", borderBottom: `1px solid rgba(24,95,165,0.1)` }}>
+                          <span style={{ color: C.blue, opacity: 0.8 }}>{k}</span>
+                          <span style={{ fontWeight: 600, color: C.blue }}>{v}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {d.bos && (
+                    <div style={{ background: C.grayBg, borderRadius: 8, padding: "10px 12px" }}>
+                      <p style={{ fontSize: 10, fontWeight: 700, color: C.gray, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6 }}>Bill of Supply</p>
+                      {[
+                        ["Invoices",    d.bos.invoices],
+                        ["Value",       fmtCur(d.bos.invoiceValue)],
+                        ["Taxable Amt", fmtCur(d.bos.taxableAmt)],
+                        ["CGST",        "—"],
+                        ["SGST",        "—"],
+                      ].map(([k, v]) => (
+                        <div key={k} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "3px 0", borderBottom: `1px solid rgba(0,0,0,0.06)` }}>
+                          <span style={{ color: C.gray, opacity: 0.8 }}>{k}</span>
+                          <span style={{ fontWeight: 600, color: C.gray }}>{v}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <TaxRateBreakdown byRate={d.byRate} />
           </div>
         ))}
@@ -352,6 +444,7 @@ function OverviewSection({ summary }) {
       <div style={{ marginTop: 16, padding: "10px 14px", background: C.surface, borderRadius: 10, border: `1px solid ${C.border}`, fontSize: 12, color: C.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
         <span>📄</span>
         <span>Sheets loaded: <strong style={{ color: C.textSub }}>{summary.sheetNames.join("  ·  ")}</strong></span>
+        {summary.hasBos && <span style={{ background: C.grayBg, color: C.gray, fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 20, marginLeft: 6 }}>Bill of Supply merged into B2B</span>}
       </div>
     </div>
   );
@@ -390,7 +483,7 @@ function B2BSection({ data }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.bg }}>
-              {["#", "Recipient", "GSTIN", "Invoice No", "Date", "Invoice Value", "Taxable Amt", "CGST", "SGST"].map((h, i) => (
+              {["#", "Recipient", "GSTIN", "Invoice No", "Date", "Type", "Invoice Value", "Taxable Amt", "CGST", "SGST"].map((h, i) => (
                 <th key={h} style={{ padding: "10px 12px", textAlign: i > 4 ? "right" : "left", fontWeight: 600, color: C.textMuted, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
@@ -405,10 +498,15 @@ function B2BSection({ data }) {
                 <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: C.textSub, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }}>{r["GSTIN/UN OF RECEIPIENT"] || "—"}</td>
                 <td style={{ padding: "10px 12px", color: C.blue, fontWeight: 500 }}>{r["INVOICE No"]}</td>
                 <td style={{ padding: "10px 12px", color: C.textMuted, whiteSpace: "nowrap" }}>{r["INVOICE DATE"]}</td>
+                <td style={{ padding: "10px 12px" }}>
+                  {r._source === "bos"
+                    ? <span style={{ background: C.grayBg, color: C.gray, fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 20 }}>BoS</span>
+                    : <span style={{ background: C.blueBg, color: C.blue, fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 20 }}>Tax</span>}
+                </td>
                 <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmtCur(parseFloat(r["INVOICE VALUE"]))}</td>
                 <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 500 }}>{fmtCur(parseFloat(r["T'BLE AMT"]))}</td>
-                <td style={{ padding: "10px 12px", textAlign: "right", color: C.brandDark }}>{fmtCur(parseFloat(r["CGST"]))}</td>
-                <td style={{ padding: "10px 12px", textAlign: "right", color: C.brandDark }}>{fmtCur(parseFloat(r["SGST"]))}</td>
+                <td style={{ padding: "10px 12px", textAlign: "right", color: C.brandDark }}>{parseFloat(r["CGST"]) > 0 ? fmtCur(parseFloat(r["CGST"])) : "—"}</td>
+                <td style={{ padding: "10px 12px", textAlign: "right", color: C.brandDark }}>{parseFloat(r["SGST"]) > 0 ? fmtCur(parseFloat(r["SGST"])) : "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -617,7 +715,7 @@ function exportSummaryPDF(summary, fileName) {
       <td style="padding:5px 8px;text-align:right;font-weight:700;color:#0f6e56">${cur(d.cgst+d.sgst+d.igst)}</td>
     </tr>`).join("") : "";
 
-  const salesCard = (title, badge, d, accent) => !d ? "" : `
+  const salesCard = (title, badge, d, accent, isB2B) => !d ? "" : `
     <div style="flex:1;border:1.5px solid #e0e0db;border-radius:10px;padding:16px 18px;min-width:0">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;border-bottom:2px solid ${accent};padding-bottom:8px">
         <span style="font-size:13px;font-weight:700;color:#1a1a18">${title}</span>
@@ -635,6 +733,26 @@ function exportSummaryPDF(summary, fileName) {
           <span style="color:#5f5e5a">${k}</span>
           <span style="font-weight:600;color:#1a1a18">${v}</span>
         </div>`).join("")}
+      ${isB2B && (d.taxable || d.bos) ? `
+        <div style="margin-top:12px;padding-top:10px;border-top:1px dashed #ddd">
+          <div style="font-size:9px;font-weight:700;color:#9e9c97;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Sub-breakdown</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            ${d.taxable ? `<div style="background:#e6f1fb;border-radius:7px;padding:9px 11px">
+              <div style="font-size:9px;font-weight:700;color:#185fa5;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Taxable Sales</div>
+              ${[["Invoices",d.taxable.invoices],["Value",cur(d.taxable.invoiceValue)],["Taxable",cur(d.taxable.taxableAmt)],["CGST",cur(d.taxable.cgst)],["SGST",cur(d.taxable.sgst)]].map(([k,v])=>`
+                <div style="display:flex;justify-content:space-between;font-size:10px;padding:2px 0;border-bottom:1px solid rgba(24,95,165,.1)">
+                  <span style="color:#185fa5;opacity:.8">${k}</span><span style="font-weight:600;color:#185fa5">${v}</span>
+                </div>`).join("")}
+            </div>` : ""}
+            ${d.bos ? `<div style="background:#f1efe8;border-radius:7px;padding:9px 11px">
+              <div style="font-size:9px;font-weight:700;color:#5f5e5a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Bill of Supply</div>
+              ${[["Invoices",d.bos.invoices],["Value",cur(d.bos.invoiceValue)],["Taxable",cur(d.bos.taxableAmt)],["CGST","—"],["SGST","—"]].map(([k,v])=>`
+                <div style="display:flex;justify-content:space-between;font-size:10px;padding:2px 0;border-bottom:1px solid rgba(0,0,0,.06)">
+                  <span style="color:#5f5e5a;opacity:.8">${k}</span><span style="font-weight:600;color:#5f5e5a">${v}</span>
+                </div>`).join("")}
+            </div>` : ""}
+          </div>
+        </div>` : ""}
       ${d.byRate?.length ? `
         <div style="margin-top:14px;padding-top:10px;border-top:1px dashed #ddd">
           <div style="font-size:9px;font-weight:700;color:#9e9c97;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Breakdown by Tax Rate</div>
@@ -706,8 +824,8 @@ function exportSummaryPDF(summary, fileName) {
 
 <!-- B2B + B2C CARDS SIDE BY SIDE -->
 <div style="display:flex;gap:16px;margin-bottom:24px">
-  ${salesCard("B2B Sales", `${b?.invoices||0} invoices &nbsp;·&nbsp; ${b?.recipients||0} recipients`, b, "#185fa5")}
-  ${salesCard("B2C Sales", `${c?.invoices||0} invoices &nbsp;·&nbsp; ${c?.rows?.length||0} line items`, c, "#1D9E75")}
+  ${salesCard("B2B Sales", `${b?.invoices||0} invoices &nbsp;·&nbsp; ${b?.recipients||0} recipients`, b, "#185fa5", true)}
+  ${salesCard("B2C Sales", `${c?.invoices||0} invoices &nbsp;·&nbsp; ${c?.rows?.length||0} line items`, c, "#1D9E75", false)}
 </div>
 
 <!-- COMBINED TAX SUMMARY TABLE -->
